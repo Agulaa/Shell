@@ -1,4 +1,3 @@
-package bambOS;
 
 public class Main {
 

@@ -565,7 +565,7 @@ public class Shell {
             //access [file_name] --user [user_name] (R)(M)(E) 111/000 ...
             if (command[2].equals("--user")) {
                 User user = userController.getUser(command[3]);
-                if(isAdming(user)){
+                if(isAdmin(user)){
                     try {
                         ACLController.addAceForUser(user, whichMask(command[4]), fileSystem.getFileBase(command[1]));
                     } catch (Exception e) {
@@ -810,6 +810,12 @@ public class Shell {
             readCommend();
         }
     }
+
+    /**
+     * Metoda która sprawdza czy user jest aminem
+     * @param user
+     * @return
+     */
     private boolean isAdmin(User user){
         for(Group group : userController.getUserGroups(user.getName())){
             if(group.getName().equals("admin")){

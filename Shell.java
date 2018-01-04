@@ -10,13 +10,19 @@ import com.BamoOS.Modules.FileSystem.Catalog;
 import com.BamoOS.Modules.FileSystem.FileBase;
 import com.BamoOS.Modules.FileSystem.IFileSystem;
 import com.BamoOS.Modules.ProcessManager.IProcessManager;
+import com.BamoOS.Modules.Communication.IPC;
+import com.BamoOS.Modules.FileSystem.File;
+import com.BamoOS.Modules.MemoryManagment.RAM;
+import com.BamoOS.Modules.ProcessManager.PCB;
+import com.BamoOS.Modules.ProcessManager.ProcessManager;
+import com.BamoOS.Modules.Processor.IProcessor;
+
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,29 +33,29 @@ import static com.BamoOS.Modules.ACL.OperationType.READ;
 
 public class Shell {
     private ProcesorInterface processor;
-    private IProcessManager processManager;
+    private ProcessManager processManager;
     private RAM memory;
     private IFileSystem fileSystem;
     private ILoginService loginService;
     private IUserController userController;
-    //    private IPCB PCB; //Tutaj niewiadoma, bo Bartek powinien to w ProcessManagerze udostępniać.
     private IACLController ACLController;
+	private IPC ipc;
     private Map<String, String> allCommands; //Mapa z wszystkimi komednami w shellu
 
     public Shell(IUserController userController,
                  IFileSystem fileSystem, RAM memory,
                  ProcesorInterface processor,
                  IACLController ACLController,
-                 IProcessManager processManager,
-                 ILoginService loginService) {
+                 ProcessManager processManager,
+                 ILoginService loginService, IPC ipc) {
         this.userController = userController;
         this.fileSystem = fileSystem;
         this.memory = memory;
         this.processor = processor;
         this.ACLController = ACLController;
         this.processManager = processManager;
-//        this.PCB= PCB;
         this.loginService = loginService;
+		this.ipc = ipc; 
         allCommands = new HashMap<>();
     }
 
@@ -89,6 +95,8 @@ public class Shell {
         allCommands.put("access", "Dodanie uprawnień do pliku dla konkretnego  użytkownika ");
         allCommands.put("whoami", "Wyswietla aktualnie zalogowanego uzytkownika ");
         allCommands.put("meminfo", "Wyswietlenie RAM");
+		allCommands.put("cv", "Wyswietlenie informacji o zmiennej warunkowej");
+        allCommands.put("sms", "Wyswietlenie wszytskich komunikatow wyslanych podczas komunikacji miedzyprocesorowej");
     }
 
     private void logo() {
@@ -212,6 +220,15 @@ public class Shell {
                             case "close":
                                 close(separateCommand);
                                 break;
+							case "cv":
+                                conditionVariable(separateCommand);
+                                break;
+                            case "sms":
+                                sms(separateCommand);
+                                break;
+                            case "groups":
+                                groups(separateCommand);
+                                break;
                         }
                     } else if (!isCommandGood(separateCommand[0])) {
                         System.out.println("Bledna komenda");
@@ -312,7 +329,7 @@ public class Shell {
      *
      * @param command
      */
-    private void user(String[] command) {
+        private void user(String[] command) {
         if (command.length > 1) {
             if (command[1].equals("--add")) {
                 //user --add [nazwa_uzytkownika] --group [nazwa_groupy]
@@ -349,6 +366,23 @@ public class Shell {
                     System.out.println("Bledna komenda");
                     readCommend();
                 }
+            }else if(command[1].equals("--showgroups")){
+                //user --showgroups
+                if(command.length==2){
+                    try {
+                       System.out.println( userController.printUserGroups(loginService.getLoggedUser().getName()));
+                    } catch (Exception e) {
+                        System.out.println(e.getMessage());
+                        readCommend();
+                    }
+                }else{
+                    System.out.println("Bledna komenda");
+                    readCommend();
+                }
+            }
+            else {
+                System.out.println("Bledna komenda");
+                readCommend();
             }
         }
     }
@@ -419,7 +453,20 @@ public class Shell {
             readCommend();
         }
     }
-
+   /**
+     * Metoda, ktora zostaje wywolalan gdy uzytkownik poda komende 'groups'
+     * Wyswetla liste grup.
+     * @param command
+     */
+    private void groups(String[] command){
+        //groups
+        if (command.length == 1) {
+            System.out.println(userController.printGroups());
+        } else {
+            System.out.println("Bledna komenda");
+            readCommend();
+        }
+    }
     /**
      * Metoda, ktora zostaje wywolalan gdy uzytkownik poda komende 'cr ...'
      * Wywoływane sa tutaj metody ACLControllera oraz filesystem oraz loginService
@@ -428,23 +475,17 @@ public class Shell {
      */
     private void create(String[] command) {
         if (command.length > 1) {
-            //cr [nazwa_pliku]
-            if (command.length == 3) {
-                Catalog catalog = null;
-                try {
-                    catalog = fileSystem.getCatalog();
-                } catch (Exception e) {
-                    System.out.println(e.getMessage());
-                    readCommend();
-                }
-                if (ACLController.hasUserPremissionToOperation(catalog, loginService.getLoggedUser(), MODIFY)) { //sprawdzenie uprawnien
+             //cr [nazwa_pliku]
+            if (command.length == 2) {
+                if (ACLController.hasUserPremissionToOperation(fileSystem.getCatalog(), loginService.getLoggedUser(), MODIFY)) { //sprawdzenie uprawnien
                     //tworzenie pliku
                     try {
-                        fileSystem.createFile(command[1], loginService.getLoggedUser());
+                        fileSystem.createFile(command[1], loginService.getLoggedUser(), processManager);
                     } catch (Exception e) {
                         System.out.println(e.getMessage());
                         readCommend();
                     }
+                    FileBase fileBase = null;
                     FileBase fileBase = null;
                     try {
                         fileBase = fileSystem.getFileBase(command[1]);
@@ -504,6 +545,7 @@ public class Shell {
                             matcher = pattern.matcher(line);
                             if (!matcher.lookingAt()) { // jesli nie zawiera linijka ^D to :
                                 out.append(line);
+								out.append('\n');
                             } else {
                                 //dodanie bez ^D // jesli dana linijka zawiera ^D
                                 int size = line.length();
@@ -570,25 +612,12 @@ public class Shell {
     private void ls(String[] command) {
         //ls
         if (command.length == 1) {
-            Catalog catalog = null;
-            try {
-                catalog = fileSystem.getCatalog();
-            } catch (Exception e) {
-                System.out.println(e.getMessage());
-                readCommend();
-            }
-            if (ACLController.hasUserPremissionToOperation(catalog, loginService.getLoggedUser(), READ)) {
                 try {
                     System.out.println(fileSystem.list());
                 } catch (Exception e) {
                     System.out.println(e.getMessage());
                     readCommend();
                 }
-
-            } else {
-                System.out.println("Brak uprawnien do katalogu");
-                readCommend();
-            }
         } else {
             System.out.println("Bledna komenda");
             readCommend();
@@ -772,39 +801,60 @@ public class Shell {
      * Wywoływane metodu procesManager
      * @param command
      */
-    private void process(String[] command){
-        if(command.length>1){
-            if(command.length==3){
+    private void process(String[] command) {
+        if (command.length > 1) {
+            if (command.length == 3) {
                 //process --kill [PID]
-                if(command[1].equals("--kill")){
+                if (command[1].equals("--kill")) {
                     //zakonczenie pracy procesu
-                    processManager.killProcess(Integer.parseInt(command[2]));
+                    try {
+                        processManager.killProcess(Integer.parseInt(command[2]));
+                    } catch (Exception e) {
+                        System.out.println(e.getMessage());
+                        readCommend();
+                    }
                 }
                 //process --killall [PGID]
-               else if(command[1].equals("--killall") ){
-                    processManager.killProcessGroup(Integer.parseInt(command[2]));
+                else if (command[1].equals("--killall")) {
+                    try {
+                        processManager.killProcessGroup(Integer.parseInt(command[2]));
+                    } catch (Exception e) {
+                        System.out.println(e.getMessage());
+                        readCommend();
+                    }
                 }
-                //process --ps [PGID]
-               else if(command[1].equals("--ps")){
-                   // processManager.PrintGroupInfo(Integer.parseInt(command[2]));
+                //process -–create [nazwaProcesu] [nazwaPliku][PGID]
+            }
+            else if (command.length == 5) {
+                    if (command[1].equals("--create")) {
+                        try {
+                            processManager.newProcess(command[2], Integer.parseInt(command[4]), command[3]);
+                        } catch (Exception e) {
+                            System.out.println(e.getMessage());
+                            readCommend();
+                        }
+                    }else {
+                        System.out.println("Bledna komenda");
+                        readCommend();
+                    }
+            }
+            //process –-groupCreate [nazwaProcesu] [nazwaPliku]  // nowa grupa
+            else if (command.length==4){
+                if (command[1].equals("--groupCreate")) {
+                    try {
+                        processManager.newProcessGroup(command[2], command[3]);
+                    } catch (Exception e) {
+                        System.out.println(e.getMessage());
+                        readCommend();
+                    }
+                }else{
+                    System.out.println("Bledna komenda");
+                    readCommend();
                 }
+            } else {
+                System.out.println("Bledna komenda");
+                readCommend();
             }
-           else if(command.length==2){
-                //process --ps
-                if(command[1].equals("--ps")){
-                    processManager.PrintProcesses();
-                }
-            }
-            //process -–create [nazwaProcesu] [PGID]
-            else if(command.length==4){
-                processManager.newProcess(command[2], Integer.parseInt(command[3]));
-            }//process –create [nazwaProcesu] [nazwaPliku] [PGID]
-            else if(command.length==5) {
-                processManager.newProcess(command[2],Integer.parseInt(command[4]), command[3]);
-            }
-        }else{
-            System.out.println("Bledna komenda");
-            readCommend();
         }
     }
     /**
@@ -813,15 +863,60 @@ public class Shell {
      * Metody  PCB
      * @param command
      */
-    private void pcbinfo(String[] command){
-        if(command.length==1){
-//            // wyswietlanie bloku kontrolengo aktywnego procesu
-//            PCB.PrintInfo();
-            processManager.getActivePCB().printInfo();
-        }else{
+    private void pcbinfo(String[] command) {
+        //pcbinfo --active
+        if (command.length == 2) {
+            if (command[1].equals("--active")) {
+                // wyswietlanie bloku kontrolengo aktywnego procesu
+                try {
+                    processManager.getActivePCB().printInfo();
+                } catch (Exception e) {
+                    System.out.println(e.getMessage());
+                    readCommend();
+                }
+
+            }//pcbinfo --all
+            else if (command[1].equals("--all")) {
+                try {
+                    processManager.PrintProcesses();
+                } catch (Exception e) {
+                    System.out.println(e.getMessage());
+                    readCommend();
+                }
+            } else {
+                System.out.println("Bledna komenda");
+                readCommend();
+            }
+        }
+        //pcbinfo --all [PGID]
+        else if(command.length==3){
+            if(command[1].equals("--all")) {
+                try {
+                    processManager.PrintGroupInfo(Integer.parseInt(command[2]));
+                } catch (Exception e) {
+                    System.out.println(e.getMessage());
+                    readCommend();
+                }
+            }
+            //pcbinfo --process [PID]
+            else if(command[1].equals("--process")){
+                PCB pcb=null;
+                try {
+                    pcb = processManager.getPCB(Integer.parseInt(command[2]));
+                    pcb.printInfo();
+                }catch(Exception e){
+                    System.out.println(e.getMessage());
+                }
+
+            }else{
+                System.out.println("Bledna komenda");
+                readCommend();
+            }
+        }
+        else {
             System.out.println("Bledna komenda");
             readCommend();
-        }
+            }
     }
     /**
      * Metdoa, ktora zostanie wywwoalan gdy uzytwkonik poda komende 'meminfo'
@@ -832,6 +927,7 @@ public class Shell {
         if(command.length==2){
             if(command[1].equals("--print")){
                memory.printRAM();
+			   memory.writeQueue(); 
             }
             else {
                 System.out.println("Bledna komenda");
@@ -851,7 +947,12 @@ public class Shell {
      */
     private void go(String[]command){
         if(command.length==1){
-            processor.wykonaj();
+               try {
+                processor.exe();
+            } catch (Exception e) {
+                System.out.println(e.getMessage());
+                readCommend();
+            }
         }else{
             System.out.println("Bledna komenda");
             readCommend();
